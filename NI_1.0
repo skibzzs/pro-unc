@@ -6,7 +6,7 @@ if tostring(game.PlaceId) ~= TARGET_PLACE_ID then
 end
 -- =================================================
 
-task.wait(5)
+task.wait(10)
 if getgenv().AxiomTrialRunning then
     getgenv().AxiomTrialRunning = false
     task.wait(0.3)
