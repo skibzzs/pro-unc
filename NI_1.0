@@ -1,0 +1,1052 @@
+-- ================= GAME ID CHECK =================
+local TARGET_PLACE_ID = "76911729991355"
+if tostring(game.PlaceId) ~= TARGET_PLACE_ID then
+    warn("[Axiom] Wrong Game! Expected: " .. TARGET_PLACE_ID .. " | Got: " .. tostring(game.PlaceId))
+    return
+end
+-- =================================================
+
+task.wait(5)
+if getgenv().AxiomTrialRunning then
+    getgenv().AxiomTrialRunning = false
+    task.wait(0.3)
+end
+getgenv().AxiomTrialRunning = true
+
+pcall(function()
+    for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
+        if v.Name == "Rayfield" then
+            v:Destroy()
+        end
+    end
+end)
+
+local PathfindingService = game:GetService("PathfindingService")
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+LocalPlayer.Idled:Connect(function()
+    if getgenv().AxiomTrialRunning then
+        VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(300) and getgenv().AxiomTrialRunning do
+        pcall(function()
+            VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            task.wait(0.1)
+            VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+        end)
+    end
+end)
+
+if not isfolder("AxiomConfigs") then makefolder("AxiomConfigs") end
+
+-- ================= NUMBER / SUFFIX PARSER =================
+local SuffixMultipliers = {
+    ["k"]   = 1e3,
+    ["m"]   = 1e6,
+    ["b"]   = 1e9,
+    ["t"]   = 1e12,
+    ["qa"]  = 1e15, ["qd"] = 1e15, ["quad"] = 1e15,
+    ["qn"]  = 1e18, ["qi"] = 1e18, ["quin"] = 1e18,
+    ["sx"]  = 1e21, ["sex"] = 1e21,
+    ["sp"]  = 1e24, ["sept"] = 1e24,
+    ["oc"]  = 1e27, ["oct"] = 1e27,
+    ["no"]  = 1e30, ["non"] = 1e30,
+    ["dc"]  = 1e33, ["dec"] = 1e33,
+    ["ud"]  = 1e36, ["ude"] = 1e36, ["undec"] = 1e36,
+    ["dd"]  = 1e39, ["duodec"] = 1e39,
+    ["td"]  = 1e42, ["tredec"] = 1e42,
+    ["qad"] = 1e45, ["quattuordec"] = 1e45,
+    ["qnd"] = 1e48, ["quindec"] = 1e48,
+    ["sxd"] = 1e51, ["sexdec"] = 1e51,
+    ["spd"] = 1e54, ["septendec"] = 1e54,
+    ["ocd"] = 1e57, ["octodec"] = 1e57,
+    ["nod"] = 1e60, ["novemdec"] = 1e60,
+    ["vg"]  = 1e63, ["vig"] = 1e63,
+    ["uvg"] = 1e66,
+    ["dvg"] = 1e69,
+    ["tvg"] = 1e72
+}
+
+local function parseSuffixedNumber(str)
+    if not str or str == "" then return 0 end
+    str = tostring(str):gsub("%s+", ""):gsub(",", "")
+    
+    local sciNum = tonumber(str)
+    if sciNum then return sciNum end
+    
+    local numPart, sufPart = str:match("^([%d%.]+)(%a+)$")
+    if numPart and sufPart then
+        local n = tonumber(numPart)
+        local s = sufPart:lower()
+        if n and SuffixMultipliers[s] then
+            return n * SuffixMultipliers[s]
+        end
+    end
+    
+    local pureNum = str:match("[%d%.]+")
+    return tonumber(pureNum) or 0
+end
+
+-- ================= CONFIG DEFAULTS & PERSISTENCE PRE-LOAD =================
+local configFile = "AxiomConfigs/TrialAutoSave.json"
+
+local Config = {
+    AutoTrial = false,
+    TrialDifficulty = "Hard",
+    ReturnPos = true,
+    ReturnLocation = "Auto (Pre-Trial)",
+    LeaveEarlyMins = 0,
+    AutoFarmRealm3 = false,
+    Realm3TargetMobs = {"None"},
+    AutoPrivateServer = false,
+    AutoTeleportLoop = false,
+    UserDamageStr = "0",
+    UserDamageNum = 0
+}
+
+-- Load saved JSON settings immediately before building UI elements
+if isfile and isfile(configFile) then
+    pcall(function()
+        local decoded = HttpService:JSONDecode(readfile(configFile))
+        if type(decoded) == "table" then
+            if decoded.AutoTrial ~= nil then Config.AutoTrial = decoded.AutoTrial end
+            if decoded.AutoTeleportLoop ~= nil then Config.AutoTeleportLoop = decoded.AutoTeleportLoop end
+            if decoded.TrialDifficulty ~= nil then Config.TrialDifficulty = decoded.TrialDifficulty end
+            if decoded.UserDamageStr ~= nil then
+                Config.UserDamageStr = tostring(decoded.UserDamageStr)
+                Config.UserDamageNum = parseSuffixedNumber(decoded.UserDamageStr)
+            end
+            if decoded.LeaveEarlyMins ~= nil then Config.LeaveEarlyMins = decoded.LeaveEarlyMins end
+            if decoded.ReturnPos ~= nil then Config.ReturnPos = decoded.ReturnPos end
+            if decoded.ReturnLocation ~= nil then Config.ReturnLocation = decoded.ReturnLocation end
+            if decoded.AutoFarmRealm3 ~= nil then Config.AutoFarmRealm3 = decoded.AutoFarmRealm3 end
+            if decoded.Realm3TargetMobs ~= nil then Config.Realm3TargetMobs = decoded.Realm3TargetMobs end
+            if decoded.AutoPrivateServer ~= nil then Config.AutoPrivateServer = decoded.AutoPrivateServer end
+        end
+    end)
+end
+
+local function saveCustomConfig()
+    if not writefile then return end
+    local data = {
+        AutoTrial = Config.AutoTrial,
+        AutoTeleportLoop = Config.AutoTeleportLoop,
+        TrialDifficulty = Config.TrialDifficulty,
+        UserDamageStr = Config.UserDamageStr,
+        LeaveEarlyMins = Config.LeaveEarlyMins,
+        ReturnPos = Config.ReturnPos,
+        ReturnLocation = Config.ReturnLocation,
+        AutoFarmRealm3 = Config.AutoFarmRealm3,
+        Realm3TargetMobs = Config.Realm3TargetMobs,
+        AutoPrivateServer = Config.AutoPrivateServer
+    }
+    pcall(function()
+        writefile(configFile, HttpService:JSONEncode(data))
+    end)
+end
+
+-- ================= CUSTOM POSITIONS FILE =================
+local CustomPositions = {}
+local posFile = "AxiomConfigs/TrialPositions.json"
+
+local function savePositions()
+    if not writefile then return end
+    local toSave = {}
+    for k, v in pairs(CustomPositions) do
+        toSave[k] = {X = v.X, Y = v.Y, Z = v.Z}
+    end
+    pcall(function() writefile(posFile, HttpService:JSONEncode(toSave)) end)
+end
+
+if isfile and isfile(posFile) then
+    pcall(function()
+        local decoded = HttpService:JSONDecode(readfile(posFile))
+        for k, v in pairs(decoded) do
+            CustomPositions[k] = Vector3.new(v.X, v.Y, v.Z)
+        end
+    end)
+end
+
+-- ================= RAYFIELD UI INIT =================
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "Trial Automator",
+    LoadingTitle = "Loading Automation...",
+    LoadingSubtitle = "by Axiom",
+    ConfigurationSaving = {
+        Enabled = false
+    },
+    KeySystem = false
+})
+
+local IgnoredMobs = {}
+local AutoLearnedDamage = 0
+
+local function detectPlayerDamageFromGui()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not gui then return 0 end
+    
+    local bestFound = 0
+    local function searchLabels(parent)
+        for _, obj in ipairs(parent:GetChildren()) do
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                local text = obj.Text or ""
+                local name = obj.Name:lower()
+                if name:find("dmg") or name:find("damage") or name:find("power") or name:find("strength") or text:find("⚔") or text:lower():find("dmg") then
+                    local parsed = parseSuffixedNumber(text)
+                    if parsed > bestFound then bestFound = parsed end
+                end
+            end
+            if #obj:GetChildren() > 0 then
+                searchLabels(obj)
+            end
+        end
+    end
+    
+    pcall(function() searchLabels(gui) end)
+    return bestFound
+end
+
+local function getEffectivePlayerDamage()
+    if Config.UserDamageNum and Config.UserDamageNum > 0 then
+        return Config.UserDamageNum
+    end
+    if AutoLearnedDamage > 0 then
+        return AutoLearnedDamage
+    end
+    local guiDmg = detectPlayerDamageFromGui()
+    if guiDmg > 0 then
+        AutoLearnedDamage = guiDmg
+        return guiDmg
+    end
+    return 0
+end
+
+-- ================= TRIALS TAB =================
+local TrialTab = Window:CreateTab("Trials", 4483362458)
+
+TrialTab:CreateToggle({
+    Name = "Auto Trial",
+    CurrentValue = Config.AutoTrial,
+    Callback = function(Value)
+        Config.AutoTrial = Value
+        saveCustomConfig()
+    end,
+})
+
+TrialTab:CreateToggle({
+    Name = "Auto Teleport Loop Sequence",
+    CurrentValue = Config.AutoTeleportLoop,
+    Callback = function(Value)
+        Config.AutoTeleportLoop = Value
+        saveCustomConfig()
+    end,
+})
+
+TrialTab:CreateDropdown({
+    Name = "Trial Difficulty",
+    Options = {"Easy", "Medium", "Hard", "Extreme"},
+    CurrentOption = {Config.TrialDifficulty},
+    Callback = function(Option)
+        local val = type(Option) == "table" and Option[1] or Option
+        if val then
+            Config.TrialDifficulty = val
+            saveCustomConfig()
+        end
+    end,
+})
+
+local UserDamageInput = TrialTab:CreateInput({
+    Name = "Player Damage (e.g. 1sp, 17Qn, 50Sx)",
+    PlaceholderText = "Leave empty for auto-detect",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        Config.UserDamageStr = tostring(Text or "")
+        Config.UserDamageNum = parseSuffixedNumber(Text)
+        saveCustomConfig()
+    end,
+})
+
+local LeaveEarlyInput = TrialTab:CreateInput({
+    Name = "Leave Early (Minutes, 0 to disable)",
+    PlaceholderText = "0 to disable",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        local val = tonumber(Text)
+        if not val then
+            Config.LeaveEarlyMins = 0
+        else
+            if val > 19 then val = 19 end
+            if val < 0 then val = 0 end
+            Config.LeaveEarlyMins = val
+        end
+        saveCustomConfig()
+    end,
+})
+
+-- Populate real saved text into input boxes (NOT as placeholder)
+task.spawn(function()
+    task.wait(0.3)
+    if Config.UserDamageStr and Config.UserDamageStr ~= "" and Config.UserDamageStr ~= "0" then
+        pcall(function() UserDamageInput:Set(Config.UserDamageStr) end)
+    end
+    if Config.LeaveEarlyMins and Config.LeaveEarlyMins > 0 then
+        pcall(function() LeaveEarlyInput:Set(tostring(Config.LeaveEarlyMins)) end)
+    end
+end)
+
+TrialTab:CreateToggle({
+    Name = "Return After Trial",
+    CurrentValue = Config.ReturnPos,
+    Callback = function(Value)
+        Config.ReturnPos = Value
+        saveCustomConfig()
+    end,
+})
+
+local function buildReturnOptions()
+    local opts = {"Auto (Pre-Trial)"}
+    for k, _ in pairs(CustomPositions) do table.insert(opts, k) end
+    table.sort(opts, function(a, b)
+        if a == "Auto (Pre-Trial)" then return true end
+        if b == "Auto (Pre-Trial)" then return false end
+        return a < b
+    end)
+    return opts
+end
+
+local ReturnDropdown = TrialTab:CreateDropdown({
+    Name = "Return Location",
+    Options = buildReturnOptions(),
+    CurrentOption = {Config.ReturnLocation},
+    Callback = function(Option)
+        local val = type(Option) == "table" and Option[1] or Option
+        if val then
+            Config.ReturnLocation = val
+            saveCustomConfig()
+        end
+    end,
+})
+
+local currentPosName = "New Spot"
+TrialTab:CreateInput({
+    Name = "Position Name",
+    PlaceholderText = "Name your current spot...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text) currentPosName = Text end,
+})
+
+local function getChar()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
+
+local function getRoot()
+    return getChar():FindFirstChild("HumanoidRootPart")
+end
+
+local function getHum()
+    return getChar():FindFirstChild("Humanoid")
+end
+
+TrialTab:CreateButton({
+    Name = "Save Current Position",
+    Callback = function()
+        local root = getRoot()
+        if root and currentPosName ~= "" then
+            CustomPositions[currentPosName] = root.Position
+            savePositions()
+            ReturnDropdown:Refresh(buildReturnOptions(), true)
+            Rayfield:Notify({Title = "Position Saved", Content = "Saved '" .. currentPosName .. "' to your locations.", Duration = 3})
+        end
+    end,
+})
+
+local deletePosName = ""
+
+TrialTab:CreateInput({
+    Name = "Delete Saved Position",
+    PlaceholderText = "Type exact name to delete...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text) deletePosName = Text end,
+})
+
+TrialTab:CreateButton({
+    Name = "Delete Position",
+    Callback = function()
+        if deletePosName ~= "" and CustomPositions[deletePosName] then
+            CustomPositions[deletePosName] = nil
+            if Config.ReturnLocation == deletePosName then
+                Config.ReturnLocation = "Auto (Pre-Trial)"
+                saveCustomConfig()
+            end
+            savePositions()
+            ReturnDropdown:Refresh(buildReturnOptions(), true)
+            Rayfield:Notify({Title = "Position Deleted", Content = "Removed '" .. deletePosName .. "'.", Duration = 3})
+        else
+            Rayfield:Notify({Title = "Not Found", Content = "No saved position with that exact name.", Duration = 3})
+        end
+    end,
+})
+
+local ForceTrial = false
+local IsTrialing = false
+local SavedPos = nil
+local TrialStartTime = 0
+local CurrentWave = 0
+local RoomEmpty = true
+local HitEnemies = {}
+
+local LeaveRequested = false
+local LeaveReason = nil
+local LastLeaveAttempt = 0
+
+-- ================= REALM 3 TAB =================
+local RealmTab = Window:CreateTab("Realm 3", 4483362458)
+
+RealmTab:CreateToggle({
+    Name = "Auto Farm Mobs",
+    CurrentValue = Config.AutoFarmRealm3,
+    Callback = function(Value)
+        Config.AutoFarmRealm3 = Value
+        saveCustomConfig()
+    end,
+})
+
+local Realm3Dropdown = RealmTab:CreateDropdown({
+    Name = "Target Mobs",
+    Options = type(Config.Realm3TargetMobs) == "table" and Config.Realm3TargetMobs or {"None"},
+    CurrentOption = type(Config.Realm3TargetMobs) == "table" and Config.Realm3TargetMobs or {"None"},
+    MultipleOptions = true,
+    Callback = function(Options)
+        Config.Realm3TargetMobs = Options
+        saveCustomConfig()
+    end,
+})
+
+local function getGameContent()
+    return workspace:FindFirstChild("__GAME_CONTENT")
+end
+
+local function getTrialsFolder()
+    local content = getGameContent()
+    if not content then return nil end
+    
+    if content:FindFirstChild("Trials") then
+        return content.Trials
+    end
+    
+    local contents = content:FindFirstChild("Contents")
+    if contents then
+        for _, world in ipairs(contents:GetChildren()) do
+            local trials = world:FindFirstChild("Trials")
+            if trials then return trials end
+        end
+    end
+    
+    return content:FindFirstChild("Trials", true)
+end
+
+local function scanRealm3Mobs()
+    local content = getGameContent()
+    local mobsFolder = nil
+    
+    if content then
+        mobsFolder = content:FindFirstChild("Mobs")
+        if not mobsFolder and content:FindFirstChild("Contents") then
+            local w3 = content.Contents:FindFirstChild("WORLD - 3") or content.Contents:FindFirstChildWhichIsA("Folder")
+            if w3 then mobsFolder = w3:FindFirstChild("Mobs") end
+        end
+    end
+    
+    local sorted = {}
+    if mobsFolder then
+        local unique = {}
+        for _, mob in pairs(mobsFolder:GetChildren()) do
+            if mob:IsA("Model") and not unique[mob.Name] then unique[mob.Name] = true end
+        end
+        for k, _ in pairs(unique) do table.insert(sorted, k) end
+        table.sort(sorted)
+    end
+    if #sorted == 0 then table.insert(sorted, "None") end
+    Realm3Dropdown:Refresh(sorted, true)
+    return #sorted > 0 and (sorted[1] ~= "None" and #sorted or 0) or 0
+end
+
+RealmTab:CreateButton({
+    Name = "Refresh Mob List",
+    Callback = function()
+        local count = scanRealm3Mobs()
+        Rayfield:Notify({Title = "Mobs Refreshed", Content = "Found " .. tostring(count) .. " unique mob types.", Duration = 3})
+    end,
+})
+
+scanRealm3Mobs()
+
+-- ================= PRIVATE SERVER =================
+local PrivateServerTab = Window:CreateTab("Private Server", 4483362458)
+
+PrivateServerTab:CreateToggle({
+    Name = "Auto Join Private If Not Alone",
+    CurrentValue = Config.AutoPrivateServer,
+    Callback = function(Value)
+        Config.AutoPrivateServer = Value
+        saveCustomConfig()
+    end,
+})
+
+local function joinPrivateServer()
+    local targetBtn = game:GetService("Players").LocalPlayer.PlayerGui.Settings.Main.Frame.Settings.ScrollingFrame["Join Private Server"].Button
+
+    local function trigger_button()
+        local success = false
+
+        local connections = getconnections(targetBtn.MouseButton1Click)
+        if #connections > 0 then
+            for _, conn in ipairs(connections) do
+                pcall(function() conn:Fire() end)
+                pcall(function() conn.Function() end)
+            end
+            success = true
+        end
+
+        if not success then
+            connections = getconnections(targetBtn.Activated)
+            if #connections > 0 then
+                for _, conn in ipairs(connections) do
+                    pcall(function() conn:Fire() end)
+                    pcall(function() conn.Function() end)
+                end
+                success = true
+            end
+        end
+
+        return success
+    end
+
+    local ran, triggered = pcall(trigger_button)
+
+    if not ran or not triggered then
+        local absPos = targetBtn.AbsolutePosition
+        local absSize = targetBtn.AbsoluteSize
+
+        local targetX = absPos.X + (absSize.X / 2)
+        local targetY = absPos.Y + (absSize.Y / 2) + 36
+
+        local vu = game:GetService("VirtualUser")
+        vu:Button1Down(Vector2.new(targetX, targetY))
+        task.wait(0.05)
+        vu:Button1Up(Vector2.new(targetX, targetY))
+    end
+end
+
+PrivateServerTab:CreateButton({
+    Name = "Test Private Server Join",
+    Callback = function()
+        local ok, err = pcall(joinPrivateServer)
+        if not ok then
+            Rayfield:Notify({Title = "Private Server FAILED", Content = tostring(err), Duration = 5})
+        else
+            Rayfield:Notify({Title = "Private Server", Content = "Join button triggered", Duration = 3})
+        end
+    end,
+})
+
+local PrivateServerTriggered = false
+
+task.spawn(function()
+    while task.wait(2) and getgenv().AxiomTrialRunning do
+        local ok, err = pcall(function()
+            if not Config.AutoPrivateServer then
+                PrivateServerTriggered = false
+                return
+            end
+
+            local totalPlayers = #Players:GetPlayers()
+
+            if totalPlayers > 1 and not PrivateServerTriggered then
+                PrivateServerTriggered = true
+                Rayfield:Notify({Title = "Private Server", Content = "Other players detected (" .. tostring(totalPlayers) .. " total), joining private server...", Duration = 4})
+                joinPrivateServer()
+            elseif totalPlayers <= 1 then
+                PrivateServerTriggered = false
+            end
+        end)
+
+        if not ok then
+            warn("AxiomPrivateServerWatcherError:", err)
+        end
+    end
+end)
+
+-- ================= CORE HELPERS =================
+local function getEnemyPos(mob)
+    local ok, result = pcall(function()
+        local hrp = mob:FindFirstChild("HumanoidRootPart", true)
+        if hrp then return hrp.Position end
+        return mob:GetPivot().Position
+    end)
+    if ok then return result end
+    return nil
+end
+
+local function getEnemyHp(mob)
+    local ok, result = pcall(function()
+        local oresUI = mob:FindFirstChild("OresTopUI", true)
+        if oresUI then
+            local healthNode = oresUI:FindFirstChild("Health", true)
+            if healthNode then
+                local valStr = ""
+                pcall(function() valStr = tostring(healthNode.Text) end)
+                if valStr == "" or valStr == "nil" then
+                    pcall(function() valStr = tostring(healthNode.Value) end)
+                end
+                if string.find(string.lower(valStr), "respawn") then return -999 end
+                return parseSuffixedNumber(valStr)
+            end
+        end
+        local hum = mob:FindFirstChildOfClass("Humanoid") or mob:FindFirstChild("Humanoid", true)
+        if hum then return hum.Health end
+        return 100
+    end)
+    if ok and result ~= nil then return result end
+    return -999
+end
+
+local function isEnemyDead(mob)
+    local ok, result = pcall(function()
+        if not mob or not mob.Parent then return true end
+        if IgnoredMobs[mob] and os.time() < IgnoredMobs[mob] then return true end
+        local hp = getEnemyHp(mob)
+        if hp == -999 or hp <= 0 then return true end
+        local head = mob:FindFirstChild("Head") or mob:FindFirstChild("UpperTorso") or mob:FindFirstChild("Torso")
+        if head and head:IsA("BasePart") and head.Transparency >= 1 then return true end
+        return false
+    end)
+    if ok then return result end
+    return true
+end
+
+local function isOneShot(mob)
+    local effDmg = getEffectivePlayerDamage()
+    if effDmg and effDmg > 0 then
+        local hp = getEnemyHp(mob)
+        if hp > 0 and effDmg >= hp then
+            return true
+        end
+    end
+    return false
+end
+
+local function getAliveEnemies()
+    local trials = getTrialsFolder()
+    if not trials then return {} end
+    
+    local diffRoomName = Config.TrialDifficulty .. "TrialRoom"
+    local room = trials:FindFirstChild(diffRoomName)
+    local mobsFolder = room and room:FindFirstChild("Mobs")
+    if not mobsFolder then return {} end
+    
+    local alive = {}
+    for _, mob in pairs(mobsFolder:GetChildren()) do
+        if mob:IsA("Model") and not isEnemyDead(mob) then table.insert(alive, mob) end
+    end
+    return alive
+end
+
+local function getOptimalSweepPath(enemies)
+    local root = getRoot()
+    if not root then return {} end
+    
+    local pool = {}
+    for _, m in ipairs(enemies) do
+        local p = getEnemyPos(m)
+        if p and not isEnemyDead(m) then
+            table.insert(pool, {mob = m, pos = p})
+        end
+    end
+    
+    local ordered = {}
+    local currPos = root.Position
+    
+    while #pool > 0 do
+        local bestIdx, bestDist = 1, math.huge
+        for i, item in ipairs(pool) do
+            local d = (currPos - item.pos).Magnitude
+            if d < bestDist then
+                bestDist = d
+                bestIdx = i
+            end
+        end
+        
+        local chosen = table.remove(pool, bestIdx)
+        table.insert(ordered, chosen.mob)
+        currPos = chosen.pos
+    end
+    
+    return ordered
+end
+
+local function getClosestRealm3Mob()
+    local targets = Config.Realm3TargetMobs
+    if type(targets) ~= "table" then targets = {targets} end
+    if not targets or #targets == 0 then return nil end
+    local validTargets = {}
+    for _, v in pairs(targets) do if v ~= "None" then validTargets[v] = true end end
+    
+    local content = getGameContent()
+    if not content then return nil end
+    local mobsFolder = content:FindFirstChild("Mobs")
+    if not mobsFolder and content:FindFirstChild("Contents") then
+        local w3 = content.Contents:FindFirstChild("WORLD - 3") or content.Contents:FindFirstChildWhichIsA("Folder")
+        if w3 then mobsFolder = w3:FindFirstChild("Mobs") end
+    end
+    if not mobsFolder then return nil end
+    
+    local closest, dist = nil, math.huge
+    local root = getRoot()
+    if not root then return nil end
+    for _, mob in pairs(mobsFolder:GetChildren()) do
+        if mob:IsA("Model") and validTargets[mob.Name] and not isEnemyDead(mob) then
+            local pos = getEnemyPos(mob)
+            if pos then
+                local d = (root.Position - pos).Magnitude
+                if d < dist then closest, dist = mob, d end
+            end
+        end
+    end
+    return closest
+end
+
+local function teleportToStatic(targetPos)
+    local root = getRoot()
+    if not root then return end
+    root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+    task.wait(0.2)
+end
+
+-- ================= TELEPORT SEQUENCE LOOP =================
+task.spawn(function()
+    while getgenv().AxiomTrialRunning do
+        if Config.AutoTeleportLoop then
+            -- Step 1: Teleport to 556, 6, 7818
+            teleportToStatic(Vector3.new(556, 6, 7818))
+
+            -- Step 2: Wait 4 seconds
+            task.wait(4)
+            if not getgenv().AxiomTrialRunning or not Config.AutoTeleportLoop then continue end
+
+            -- Step 3: Teleport to 548, 3, 7827
+            teleportToStatic(Vector3.new(548, 3, 7827))
+
+            -- Step 4: Wait 90 seconds
+            task.wait(90)
+            if not getgenv().AxiomTrialRunning or not Config.AutoTeleportLoop then continue end
+
+            -- Step 5: Teleport to 560, 5, 7825
+            teleportToStatic(Vector3.new(560, 5, 7825))
+
+            task.wait(1)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- ================= LEAVE TRIAL BUTTON HANDLING =================
+local function findLeaveTrialButton()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local hud = gui and gui:FindFirstChild("HUD")
+    if not hud then return nil end
+    return hud:FindFirstChild("LeaveTrial", true)
+end
+
+local function triggerLeaveButton()
+    local leaveBtn = findLeaveTrialButton()
+    if not leaveBtn then return false end
+
+    local fired = false
+    pcall(function()
+        if leaveBtn.Activate then
+            leaveBtn:Activate()
+            fired = true
+        end
+    end)
+
+    pcall(function()
+        if firesignal then
+            if leaveBtn.MouseButton1Click then firesignal(leaveBtn.MouseButton1Click) fired = true end
+            if leaveBtn.MouseButton1Down then firesignal(leaveBtn.MouseButton1Down) fired = true end
+            if leaveBtn.Activated then firesignal(leaveBtn.Activated) fired = true end
+        elseif getconnections then
+            for _, eventName in ipairs({"MouseButton1Click", "MouseButton1Down", "Activated"}) do
+                local sig = leaveBtn[eventName]
+                if sig then
+                    for _, conn in ipairs(getconnections(sig)) do
+                        pcall(function() conn:Function() end)
+                        fired = true
+                    end
+                end
+            end
+        end
+    end)
+    return fired
+end
+
+local function requestTrialLeave(reason)
+    if LeaveRequested then return end
+    LeaveRequested = true
+    LeaveReason = reason or "Unknown"
+    LastLeaveAttempt = 0
+end
+
+-- ================= ENTER / EXIT TRIAL =================
+local function enterTrial()
+    local trials = getTrialsFolder()
+    if not trials then return end
+    
+    local diffRoomName = Config.TrialDifficulty .. "TrialRoom"
+    local padName = "__Trial" .. Config.TrialDifficulty .. "Room"
+    local room = trials:FindFirstChild(diffRoomName)
+    if not room then return end
+    
+    local diffPad = room:FindFirstChild(padName) or room:FindFirstChildWhichIsA("Model") or room:FindFirstChildWhichIsA("BasePart")
+    if not diffPad then return end
+    
+    teleportToStatic(diffPad:GetPivot().Position)
+end
+
+local function delayedReturnTeleport(skipReturn)
+    if skipReturn then
+        SavedPos = nil
+        return
+    end
+    if not Config.ReturnPos then
+        SavedPos = nil
+        return
+    end
+
+    task.spawn(function()
+        local waitTime = math.random(20, 30)
+        task.wait(waitTime)
+
+        local targetReturn = nil
+        if Config.ReturnLocation == "Auto (Pre-Trial)" then
+            targetReturn = SavedPos
+        elseif CustomPositions[Config.ReturnLocation] then
+            targetReturn = CustomPositions[Config.ReturnLocation]
+        end
+
+        if targetReturn then
+            teleportToStatic(targetReturn)
+        end
+        SavedPos = nil
+    end)
+end
+
+local function finalizeTrialLeave()
+    LeaveRequested = false
+    LeaveReason = nil
+    IsTrialing = false
+    ForceTrial = false
+    CurrentWave = 0
+    RoomEmpty = true
+    HitEnemies = {}
+
+    delayedReturnTeleport(false)
+end
+
+-- ================= COMBAT MOVEMENT =================
+local function walkToEnemy(enemy)
+    local root, hum = getRoot(), getHum()
+    if not root or not hum then return end
+
+    local moveStuckTimer = 0
+    local hpStuckTimer = 0
+    local initialHp = getEnemyHp(enemy)
+    local lastHp = initialHp
+    local lastMyPos = root.Position
+    local startAttackTime = os.clock()
+    local wasOneShot = isOneShot(enemy)
+
+    while enemy and not isEnemyDead(enemy) and root and hum and (Config.AutoTrial or Config.AutoFarmRealm3 or ForceTrial) and getgenv().AxiomTrialRunning do
+        local ePos = getEnemyPos(enemy)
+        if not ePos then
+            IgnoredMobs[enemy] = os.time() + 10
+            break
+        end
+        
+        local dist = (root.Position - ePos).Magnitude
+        hum:MoveTo(ePos)
+
+        if wasOneShot and dist <= 7 then
+            task.wait(0.04)
+            if isEnemyDead(enemy) then
+                break
+            end
+        end
+
+        local myMovementDist = (root.Position - lastMyPos).Magnitude
+        lastMyPos = root.Position
+
+        if myMovementDist < 0.5 and dist > 5 then
+            moveStuckTimer = moveStuckTimer + 0.05
+            if moveStuckTimer > 1.8 then
+                hum.Jump = true
+                if moveStuckTimer > 2.5 then
+                    IgnoredMobs[enemy] = os.time() + 10
+                    break
+                end
+            end
+        else
+            moveStuckTimer = 0
+        end
+
+        if dist < 25 then
+            local currentHp = getEnemyHp(enemy)
+            if currentHp == -999 then break end
+            
+            if initialHp > 0 and currentHp < lastHp then
+                local delta = lastHp - currentHp
+                if delta > AutoLearnedDamage then
+                    AutoLearnedDamage = delta
+                end
+            end
+
+            if currentHp == lastHp then
+                hpStuckTimer = hpStuckTimer + 0.05
+                if hpStuckTimer > 2.5 then
+                    IgnoredMobs[enemy] = os.time() + 10
+                    break
+                end
+            else
+                lastHp = currentHp
+                hpStuckTimer = 0
+            end
+        else
+            hpStuckTimer = 0
+            lastHp = getEnemyHp(enemy)
+        end
+
+        task.wait(0.03)
+    end
+
+    if initialHp > 0 and (os.clock() - startAttackTime) <= 0.25 and initialHp > AutoLearnedDamage then
+        AutoLearnedDamage = initialHp
+    end
+end
+
+local function safeWalkToEnemy(enemy)
+    local ok, err = pcall(function()
+        walkToEnemy(enemy)
+    end)
+    if not ok then
+        warn("AxiomError on mob, blacklisting:", err)
+        pcall(function() IgnoredMobs[enemy] = os.time() + 10 end)
+    end
+end
+
+-- ================= MAIN LOOP =================
+task.spawn(function()
+    while task.wait(0.1) and getgenv().AxiomTrialRunning do
+        local ok, err = pcall(function()
+            local isTrialActive = Config.AutoTrial or ForceTrial
+            local isRealmActive = Config.AutoFarmRealm3
+
+            if not isTrialActive and not isRealmActive then
+                if IsTrialing then
+                    requestTrialLeave("Disabled")
+                end
+            end
+
+            local aliveEnemies = getAliveEnemies()
+
+            if #aliveEnemies == 0 then
+                RoomEmpty = true
+            elseif RoomEmpty then
+                CurrentWave = CurrentWave + 1
+                RoomEmpty = false
+                HitEnemies = {}
+            end
+
+            local m = os.date("*t").min
+            local triggerTime = (m == 29 or m == 59)
+            local inWindow = (m >= 29 and m <= 49) or (m >= 59 or m <= 19)
+
+            if isTrialActive then
+                if #aliveEnemies > 0 and not IsTrialing then
+                    IsTrialing = true
+                    TrialStartTime = os.time()
+                    CurrentWave = 1
+                    RoomEmpty = false
+                    HitEnemies = {}
+                elseif (triggerTime or ForceTrial) and not IsTrialing then
+                    IsTrialing = true
+                    if ForceTrial then
+                        TrialStartTime = os.time()
+                    else
+                        TrialStartTime = os.time() + 60
+                    end
+                    CurrentWave = 0
+                    RoomEmpty = true
+                    HitEnemies = {}
+                    if Config.ReturnPos and Config.ReturnLocation == "Auto (Pre-Trial)" and getRoot() then
+                        SavedPos = getRoot().Position
+                    end
+                    enterTrial()
+                elseif IsTrialing then
+                    local elapsedSeconds = math.max(0, os.time() - TrialStartTime)
+                    local elapsedMins = elapsedSeconds / 60
+
+                    if Config.LeaveEarlyMins > 0 and elapsedMins >= Config.LeaveEarlyMins then
+                        requestTrialLeave("LeaveEarly")
+                    end
+
+                    if LeaveRequested then
+                        if os.clock() - LastLeaveAttempt >= 1 then
+                            LastLeaveAttempt = os.clock()
+                            triggerLeaveButton()
+                        end
+
+                        local leaveBtn = findLeaveTrialButton()
+                        if not leaveBtn or leaveBtn.Visible == false then
+                            finalizeTrialLeave()
+                        end
+
+                        return
+                    end
+
+                    if #aliveEnemies > 0 then
+                        local sweepPath = getOptimalSweepPath(aliveEnemies)
+                        for _, mob in ipairs(sweepPath) do
+                            if not isEnemyDead(mob) and (Config.AutoTrial or ForceTrial) and not LeaveRequested then
+                                safeWalkToEnemy(mob)
+                            end
+                        end
+                    else
+                        if not inWindow and not ForceTrial then
+                            requestTrialLeave("WindowEnded")
+                        end
+                    end
+                end
+            end
+
+            if not IsTrialing and isRealmActive then
+                local enemy = getClosestRealm3Mob()
+                if enemy then safeWalkToEnemy(enemy) end
+            end
+        end)
+
+        if not ok then
+            warn("AxiomLoopError:", err)
+        end
+    end
+end)
